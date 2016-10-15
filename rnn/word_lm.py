@@ -169,7 +169,7 @@ The hyperparameters used in the model:
 class SmallConfig:
     """Small config."""
     init_scale = 0.1
-    learning_rate = 0.1
+    learning_rate = 0.4
     max_grad_norm = 5
     num_layers = 2
     num_steps = 20
@@ -185,7 +185,7 @@ class SmallConfig:
 class MediumConfig:
     """Medium config."""
     init_scale = 0.05
-    learning_rate = 0.1
+    learning_rate = 0.2
     max_grad_norm = 5
     num_layers = 2
     num_steps = 20
@@ -259,7 +259,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         iters += model.input.num_steps
         total_iters += model.input.num_steps
 
-        if verbose and step % (model.input.epoch_size // 100) == 10:
+        if verbose and step % (model.input.epoch_size // 500) == 10:
             print('%.3f perplexity: %.3f speed: %.0f wps' %
                   (step * 1.0 / model.input.epoch_size,
                    np.exp(costs / iters),
