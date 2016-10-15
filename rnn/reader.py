@@ -55,11 +55,20 @@ def load_raw_data(data_path: Path, vocab_size: int):
         tuple (train_data, valid_data, test_data)
         where each of the data objects can be passed to Iterator.
     """
+    cached = lambda path: Path('{}.{}.npy'.format(path, vocab_size))
     train_path = data_path / 'train.txt'
-    word_to_id = _build_vocab(train_path, vocab_size)
-    train_data = _file_to_word_ids(train_path, word_to_id)
-    valid_data = _file_to_word_ids(data_path / 'valid.txt', word_to_id)
-    test_data = _file_to_word_ids(data_path / 'test.txt', word_to_id)
+    valid_path = data_path / 'valid.txt'
+    test_path = data_path / 'test.txt'
+    paths = [train_path, valid_path, test_path]
+    if all(cached(p).exists() for p in paths):
+        train_data, valid_data, test_data = [
+            np.load(str(cached(p))) for p in paths]
+    else:
+        word_to_id = _build_vocab(train_path, vocab_size)
+        train_data, valid_data, test_data = datas = [
+            _file_to_word_ids(p, word_to_id) for p in paths]
+        for data, path in zip(datas, paths):
+            np.save(str(cached(path)), data)
     return train_data, valid_data, test_data
 
 
