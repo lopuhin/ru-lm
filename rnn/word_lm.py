@@ -243,7 +243,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
         t = time.time()
         dt = t - start_time
-        if verbose and ((iters == total_iters and dt > 5.) or dt > 60.):
+        if verbose and ((iters == total_iters and dt > 5.) or dt > 30.):
             print('{:.4f} perplexity: {:.3f} speed: {:.0f} wps'.format(
                 step * 1.0 / model.input.epoch_size,
                 np.exp(costs / iters),
