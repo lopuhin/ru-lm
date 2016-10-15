@@ -52,11 +52,8 @@ class Model:
         size = config.hidden_size
         vocab_size = config.vocab_size
 
-        # Slightly better results can be obtained with forget gate biases
-        # initialized to 1 but the hyperparameters of the model would need to be
-        # different than reported in the paper.
         lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(
-            size, forget_bias=0.0, state_is_tuple=True)
+            size, forget_bias=1.0, state_is_tuple=True)
         if is_training and config.keep_prob < 1:
             lstm_cell = tf.nn.rnn_cell.DropoutWrapper(
                 lstm_cell, output_keep_prob=config.keep_prob)
@@ -73,25 +70,10 @@ class Model:
         if is_training and config.keep_prob < 1:
             inputs = tf.nn.dropout(inputs, config.keep_prob)
 
-        # Simplified version of tensorflow.models.rnn.rnn.py's rnn().
-        # This builds an unrolled LSTM for tutorial purposes only.
-        # In general, use the rnn() or state_saving_rnn() from rnn.py.
-        #
-        # The alternative version of the code below is:
-        #
-        # inputs = [tf.squeeze(input_step, [1])
-        #                     for input_step in tf.split(1, num_steps, inputs)]
-        # outputs, state = \
-        #   tf.nn.rnn(cell, inputs, initial_state=self._initial_state)
-        # TODO: ^^
-        outputs = []
-        state = self._initial_state
-        with tf.variable_scope('RNN'):
-            for time_step in range(num_steps):
-                if time_step > 0:
-                    tf.get_variable_scope().reuse_variables()
-                (cell_output, state) = cell(inputs[:, time_step, :], state)
-                outputs.append(cell_output)
+        inputs = [tf.squeeze(input_step, [1])
+                  for input_step in tf.split(1, num_steps, inputs)]
+        outputs, state = tf.nn.rnn(
+            cell, inputs, initial_state=self._initial_state)
 
         output = tf.reshape(tf.concat(1, outputs), [-1, size])
         softmax_w = tf.get_variable(
