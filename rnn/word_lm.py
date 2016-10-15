@@ -233,8 +233,8 @@ class TestConfig:
 def run_epoch(session, model, eval_op=None, verbose=False):
     """Runs the model on the given data."""
     start_time = time.time()
-    costs = 0.0
-    iters = 0
+    costs = total_costs = 0.
+    iters = total_iters = 0
     state = session.run(model.initial_state)
 
     fetches = {
@@ -255,15 +255,20 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         state = vals['final_state']
 
         costs += cost
+        total_costs += cost
         iters += model.input.num_steps
+        total_iters += model.input.num_steps
 
-        if verbose and step % (model.input.epoch_size // 10) == 10:
+        if verbose and step % (model.input.epoch_size // 100) == 10:
             print('%.3f perplexity: %.3f speed: %.0f wps' %
                   (step * 1.0 / model.input.epoch_size,
                    np.exp(costs / iters),
                    iters * model.input.batch_size / (time.time() - start_time)))
+            start_time = time.time()
+            costs = 0.
+            iters = 0
 
-    return np.exp(costs / iters)
+    return np.exp(total_costs / total_iters)
 
 
 def get_config():
