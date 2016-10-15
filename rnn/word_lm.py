@@ -241,12 +241,14 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         iters += model.input.num_steps
         total_iters += model.input.num_steps
 
-        if verbose and step % (model.input.epoch_size // 500) == 10:
-            print('%.3f perplexity: %.3f speed: %.0f wps' %
-                  (step * 1.0 / model.input.epoch_size,
-                   np.exp(costs / iters),
-                   iters * model.input.batch_size / (time.time() - start_time)))
-            start_time = time.time()
+        t = time.time()
+        dt = t - start_time
+        if verbose and ((iters == total_iters and dt > 5.) or dt > 60.):
+            print('{:.4f} perplexity: {:.3f} speed: {:.0f} wps'.format(
+                step * 1.0 / model.input.epoch_size,
+                np.exp(costs / iters),
+                iters * model.input.batch_size / dt))
+            start_time = t
             costs = 0.
             iters = 0
 
