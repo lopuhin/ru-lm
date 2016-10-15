@@ -1,60 +1,70 @@
 import collections
-import os
+from pathlib import Path
+from typing import Dict, Iterable, List
 
+import numpy as np
 import tensorflow as tf
 
 
-def _read_words(filename):
-    with tf.gfile.GFile(filename, 'r') as f:
-        return f.read().decode('utf-8').replace('\n', '<eos>').split()
+EOS = '<eos>'
+UNK = '<unk>'
 
 
-def _build_vocab(filename):
-    data = _read_words(filename)
+def _words_reader(path: Path) -> Iterable[str]:
+    # TODO - progress indicator
+    print('Reading {}'.format(path))
+    with path.open('rt', encoding='utf8') as f:
+        for line in f:
+            yield from line.replace('\n', '<eos>').split()
+    print('done.')
 
-    counter = collections.Counter(data)
+
+def _build_vocab(path: Path, vocab_size: int) -> Dict[str, int]:
+    counter = collections.Counter(_words_reader(path))
     count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
 
+    oov_count = sum(c for _, c in count_pairs[vocab_size:])
+    oov_rate = oov_count / sum(counter.values())
+    print('OOV rate: {:.2%}'.format(oov_rate))
+
+    count_pairs = count_pairs[:vocab_size - 1]
     words, _ = list(zip(*count_pairs))
     word_to_id = dict(zip(words, range(len(words))))
-
+    word_to_id[UNK] = len(word_to_id)
     return word_to_id
 
 
-def _file_to_word_ids(filename, word_to_id):
-    data = _read_words(filename)
-    return [word_to_id[word] for word in data if word in word_to_id]
+def _file_to_word_ids(path: Path, word_to_id: Dict[str, int]) -> np.ndarray:
+    data = _words_reader(path)
+    unk = word_to_id[UNK]
+    return np.fromiter((word_to_id.get(word, unk) for word in data),
+                       dtype=np.int32, count=-1)
 
 
-def raw_data(data_path=None):
-    """Load raw data from data directory 'data_path'.
+def load_raw_data(data_path: Path, vocab_size: int):
+    """ Load raw data from data directory 'data_path'.
 
-    Reads text files, converts strings to integer ids,
-    and performs mini-batching of the inputs.
+    Reads text files, converts strings to integer ids.
 
     Args:
-        data_path: string path to the directory where simple-examples.tgz has
-            been extracted.
+        data_path: string path to the directory where
+            train.txt, valid.txt and test.txt are located.
+        vocab_size: size of vocabulary (includes EOS and UNK)
 
     Returns:
-        tuple (train_data, valid_data, test_data, vocabulary)
+        tuple (train_data, valid_data, test_data)
         where each of the data objects can be passed to Iterator.
     """
-
-    train_path = os.path.join(data_path, 'train.txt')
-    valid_path = os.path.join(data_path, 'valid.txt')
-    test_path = os.path.join(data_path, 'test.txt')
-
-    word_to_id = _build_vocab(train_path)
+    train_path = data_path / 'train.txt'
+    word_to_id = _build_vocab(train_path, vocab_size)
     train_data = _file_to_word_ids(train_path, word_to_id)
-    valid_data = _file_to_word_ids(valid_path, word_to_id)
-    test_data = _file_to_word_ids(test_path, word_to_id)
-    vocabulary = len(word_to_id)
-    return train_data, valid_data, test_data, vocabulary
+    valid_data = _file_to_word_ids(data_path / 'valid.txt', word_to_id)
+    test_data = _file_to_word_ids(data_path / 'test.txt', word_to_id)
+    return train_data, valid_data, test_data
 
 
 def producer(raw_data, batch_size, num_steps, name=None):
-    """Iterate on the raw data.
+    """ Iterate on the raw data.
 
     This chunks up raw_data into batches of examples and returns Tensors that
     are drawn from these batches.
