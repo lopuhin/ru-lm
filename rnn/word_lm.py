@@ -94,38 +94,38 @@ class Model:
             [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
         self._cost = tf.reduce_sum(loss) / batch_size
-        if config.use_nce:
-            train_loss = tf.add_n(
-                [tf.nn.nce_loss(
-                    softmax_w, softmax_b,
-                    inputs=out,
-                    labels=tf.expand_dims(input_.targets[:, idx], 1),
-                    num_sampled=batch_size * 32,
-                    num_classes=vocab_size,
-                ) for idx, out in enumerate(outputs)])
-            # FIXME - don't we need to divide train_loss by len(outputs) ?
-            self._train_cost = tf.reduce_sum(train_loss) / batch_size
-        else:
-            self._train_cost = self._cost
+        nce_loss = tf.add_n(
+            [tf.nn.nce_loss(
+                softmax_w, softmax_b,
+                inputs=out,
+                labels=tf.expand_dims(input_.targets[:, idx], 1),
+                num_sampled=batch_size * 32,
+                num_classes=vocab_size,
+            ) for idx, out in enumerate(outputs)])
+        # FIXME - don't we need to divide train_loss by len(outputs) ?
+        self._nce_cost = tf.reduce_sum(nce_loss) / batch_size
         self._final_state = state
 
         if not self.is_training:
             return
 
         self._lr = tf.Variable(0.0, trainable=False)
-        tvars = tf.trainable_variables()
-        grads = tf.gradients(self._train_cost, tvars)
-        if config.max_grad_norm:
-            grads, _ = tf.clip_by_global_norm(
-                tf.gradients(self._train_cost, tvars), config.max_grad_norm)
-        optimizer = tf.train.AdagradOptimizer(self._lr)
-        self._train_op = optimizer.apply_gradients(
-            zip(grads, tvars),
-            global_step=tf.contrib.framework.get_or_create_global_step())
+        self._train_op = self._make_train_op(self._cost, config)
+        self._nce_train_op = self._make_train_op(self._nce_cost, config)
 
         self._new_lr = tf.placeholder(
             tf.float32, shape=[], name='new_learning_rate')
         self._lr_update = tf.assign(self._lr, self._new_lr)
+
+    def _make_train_op(self, cost, config):
+        tvars = tf.trainable_variables()
+        grads = tf.gradients(cost, tvars)
+        if config.max_grad_norm:
+            grads, _ = tf.clip_by_global_norm(grads, config.max_grad_norm)
+        optimizer = tf.train.AdagradOptimizer(self._lr)
+        return optimizer.apply_gradients(
+            zip(grads, tvars),
+            global_step=tf.contrib.framework.get_or_create_global_step())
 
     def assign_lr(self, session, lr_value):
         session.run(self._lr_update, feed_dict={self._new_lr: lr_value})
@@ -143,8 +143,8 @@ class Model:
         return self._cost
 
     @property
-    def train_cost(self):
-        return self._train_cost
+    def nce_cost(self):
+        return self._nce_cost
 
     @property
     def final_state(self):
@@ -157,6 +157,10 @@ class Model:
     @property
     def train_op(self):
         return self._train_op
+
+    @property
+    def nce_train_op(self):
+        return self._nce_train_op
 
 
 """
@@ -195,6 +199,11 @@ class SmallConfig(DefaultConfig):
     lr_decay = 0.5
     batch_size = 32
     vocab_size = 10000
+
+
+class SmallNCEConfig(SmallConfig):
+    """Small config."""
+    use_nce = True
 
 
 class MediumConfig(DefaultConfig):
@@ -251,7 +260,7 @@ class TestConfig:
     vocab_size = 10000
 
 
-def run_epoch(session, model, eval_op=None, verbose=False):
+def run_epoch(session, model, use_nce=False, epoch=None):
     """Runs the model on the given data."""
     start_time = time.time()
     costs = total_costs = 0.
@@ -259,17 +268,23 @@ def run_epoch(session, model, eval_op=None, verbose=False):
     state = session.run(model.initial_state)
 
     fetches = {
-        'cost': model.train_cost if model.is_training else model.cost,
+        'cost': model.cost,
         'final_state': model.final_state,
     }
-    if eval_op is not None:
-        fetches['eval_op'] = eval_op
 
     for step in range(model.input.epoch_size):
         feed_dict = {}
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
             feed_dict[h] = state[i].h
+        if model.is_training:
+            if not use_nce or (
+                    epoch == 0 and step / model.input.epoch_size < 0.1):
+                fetches['cost'] = model.cost
+                fetches['train_op'] = model.train_op
+            else:
+                fetches['cost'] = model.nce_cost
+                fetches['train_op'] = model.nce_train_op
 
         vals = session.run(fetches, feed_dict)
         cost = vals['cost']
@@ -282,9 +297,9 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
         t = time.time()
         dt = t - start_time
-        if verbose and ((iters == total_iters and dt > 5.) or dt > 30.):
+        if model.is_training and ((iters == total_iters and dt > 5.) or dt > 30.):
             print('{:.4f} perplexity: {:.3f} speed: {:.0f} wps'.format(
-                step * 1.0 / model.input.epoch_size,
+                step / model.input.epoch_size,
                 np.exp(costs / iters),
                 iters * model.input.batch_size / dt))
             start_time = t
@@ -297,6 +312,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 def get_config():
     return {
         'small': SmallConfig(),
+        'small-nce': SmallNCEConfig(),
         'medium': MediumConfig(),
         'medium-nce': MediumNCEConfig(),
         'large': LargeConfig(),
@@ -354,7 +370,7 @@ def main(_):
                 print('Epoch: {} Learning rate: {:.3f}'
                       .format(i + 1, session.run(m.lr)))
                 train_perplexity = run_epoch(
-                    session, m, eval_op=m.train_op, verbose=True)
+                    session, m, use_nce=config.use_nce, epoch=i)
                 print('Epoch: {} Train Perplexity: {:.3f}'
                       .format(i + 1, train_perplexity))
                 valid_perplexity = run_epoch(session, mvalid)
