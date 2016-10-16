@@ -31,6 +31,7 @@ def _build_vocab(path: Path, vocab_size: int) -> Dict[str, int]:
     words, _ = list(zip(*count_pairs))
     word_to_id = dict(zip(words, range(len(words))))
     word_to_id[UNK] = len(word_to_id)
+    # TODO - place UNK into correct place by frequncy
     return word_to_id
 
 

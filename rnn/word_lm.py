@@ -44,7 +44,8 @@ class Input:
 class Model:
     """The model."""
 
-    def __init__(self, is_training, config, input_):
+    def __init__(self, is_training: bool, config, input_):
+        self.is_training = is_training
         self._input = input_
 
         batch_size = input_.batch_size
@@ -77,23 +78,33 @@ class Model:
 
         output = tf.reshape(tf.concat(1, outputs), [-1, size])
         softmax_w = tf.get_variable(
-            'softmax_w', [size, vocab_size], dtype=data_type())
+            'softmax_w', [vocab_size, size], dtype=data_type())
         softmax_b = tf.get_variable(
             'softmax_b', [vocab_size], dtype=data_type())
-        logits = tf.matmul(output, softmax_w) + softmax_b
+        logits = tf.matmul(output, softmax_w, transpose_b=True) + softmax_b
+        labels = tf.reshape(input_.targets, [-1])
         loss = tf.nn.seq2seq.sequence_loss_by_example(
-            [logits],
-            [tf.reshape(input_.targets, [-1])],
+            [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
-        self._cost = cost = tf.reduce_sum(loss) / batch_size
+        self._cost = tf.reduce_sum(loss) / batch_size
+        train_loss = tf.add_n(
+            [tf.nn.nce_loss(
+                softmax_w, softmax_b,
+                inputs=out,
+                labels=tf.expand_dims(input_.targets[:, idx], 1),
+                num_sampled=batch_size * 64,
+                num_classes=vocab_size,
+            ) for idx, out in enumerate(outputs)])
+        # FIXME - don't we need to divide train_loss by len(outputs) ?
+        self._train_cost = tf.reduce_sum(train_loss) / batch_size
         self._final_state = state
 
-        if not is_training:
+        if not self.is_training:
             return
 
         self._lr = tf.Variable(0.0, trainable=False)
         tvars = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars),
+        grads, _ = tf.clip_by_global_norm(tf.gradients(self._train_cost, tvars),
                                           config.max_grad_norm)
         optimizer = tf.train.AdagradOptimizer(self._lr)
         self._train_op = optimizer.apply_gradients(
@@ -118,6 +129,10 @@ class Model:
     @property
     def cost(self):
         return self._cost
+
+    @property
+    def train_cost(self):
+        return self._train_cost
 
     @property
     def final_state(self):
@@ -220,7 +235,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
     state = session.run(model.initial_state)
 
     fetches = {
-        'cost': model.cost,
+        'cost': model.train_cost if model.is_training else model.cost,
         'final_state': model.final_state,
     }
     if eval_op is not None:
