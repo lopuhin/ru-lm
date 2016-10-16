@@ -12,7 +12,7 @@ logging = tf.logging
 
 flags.DEFINE_string(
     'model', 'small',
-    'A type of model. Possible options are: small, medium, large.')
+    'A type of model. Possible options are: small, medium, medium-nce, large.')
 flags.DEFINE_string(
     'data_path', None,
     'Where the training/test data is stored.')
@@ -87,16 +87,19 @@ class Model:
             [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
         self._cost = tf.reduce_sum(loss) / batch_size
-        train_loss = tf.add_n(
-            [tf.nn.nce_loss(
-                softmax_w, softmax_b,
-                inputs=out,
-                labels=tf.expand_dims(input_.targets[:, idx], 1),
-                num_sampled=batch_size * 64,
-                num_classes=vocab_size,
-            ) for idx, out in enumerate(outputs)])
-        # FIXME - don't we need to divide train_loss by len(outputs) ?
-        self._train_cost = tf.reduce_sum(train_loss) / batch_size
+        if config.use_nce:
+            train_loss = tf.add_n(
+                [tf.nn.nce_loss(
+                    softmax_w, softmax_b,
+                    inputs=out,
+                    labels=tf.expand_dims(input_.targets[:, idx], 1),
+                    num_sampled=batch_size * 32,
+                    num_classes=vocab_size,
+                ) for idx, out in enumerate(outputs)])
+            # FIXME - don't we need to divide train_loss by len(outputs) ?
+            self._train_cost = tf.reduce_sum(train_loss) / batch_size
+        else:
+            self._train_cost = self._cost
         self._final_state = state
 
         if not self.is_training:
@@ -104,8 +107,10 @@ class Model:
 
         self._lr = tf.Variable(0.0, trainable=False)
         tvars = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(self._train_cost, tvars),
-                                          config.max_grad_norm)
+        grads = tf.gradients(self._train_cost, tvars)
+        if config.max_grad_norm:
+            grads, _ = tf.clip_by_global_norm(
+                tf.gradients(self._train_cost, tvars), config.max_grad_norm)
         optimizer = tf.train.AdagradOptimizer(self._lr)
         self._train_op = optimizer.apply_gradients(
             zip(grads, tvars),
@@ -162,8 +167,11 @@ The hyperparameters used in the model:
 - batch_size - the batch size
 """
 
+class DefaultConfig:
+    use_nce = False
 
-class SmallConfig:
+
+class SmallConfig(DefaultConfig):
     """Small config."""
     init_scale = 0.1
     learning_rate = 0.4
@@ -179,7 +187,7 @@ class SmallConfig:
     vocab_size = 10000
 
 
-class MediumConfig:
+class MediumConfig(DefaultConfig):
     """Medium config."""
     init_scale = 0.05
     learning_rate = 0.2
@@ -195,7 +203,24 @@ class MediumConfig:
     vocab_size = 200000
 
 
-class LargeConfig:
+class MediumNCEConfig(DefaultConfig):
+    """Medium NCE config."""
+    use_nce = True
+    init_scale = 0.01
+    learning_rate = 0.1
+    max_grad_norm = 5
+    num_layers = 2
+    num_steps = 20
+    hidden_size = 1024
+    max_epoch = 6
+    max_max_epoch = 39
+    keep_prob = 0.9
+    lr_decay = 0.8
+    batch_size = 64
+    vocab_size = 200000
+
+
+class LargeConfig(DefaultConfig):
     """Large config."""
     init_scale = 0.04
     learning_rate = 0.1
@@ -271,16 +296,13 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
 
 def get_config():
-    if FLAGS.model == 'small':
-        return SmallConfig()
-    elif FLAGS.model == 'medium':
-        return MediumConfig()
-    elif FLAGS.model == 'large':
-        return LargeConfig()
-    elif FLAGS.model == 'test':
-        return TestConfig()
-    else:
-        raise ValueError('Invalid model: %s', FLAGS.model)
+    return {
+        'small': SmallConfig(),
+        'medium': MediumConfig(),
+        'medium-nce': MediumNCEConfig(),
+        'large': LargeConfig(),
+        'test': TestConfig(),
+    }[FLAGS.model]
 
 
 def main(_):
