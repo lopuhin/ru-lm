@@ -197,6 +197,11 @@ class SmallConfig(DefaultConfig):
     vocab_size = 10000
 
 
+class SmallNCEConfig(SmallConfig):
+    """Small NCE config."""
+    use_nce = True
+
+
 class MediumConfig(DefaultConfig):
     """Medium config."""
     init_scale = 0.05
@@ -297,6 +302,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 def get_config():
     return {
         'small': SmallConfig(),
+        'small-nce': SmallNCEConfig(),
         'medium': MediumConfig(),
         'medium-nce': MediumNCEConfig(),
         'large': LargeConfig(),
