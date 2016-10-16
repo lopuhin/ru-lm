@@ -51,10 +51,17 @@ class Model:
         batch_size = input_.batch_size
         num_steps = input_.num_steps
         size = config.hidden_size
+        out_size = config.proj_size or size
         vocab_size = config.vocab_size
 
-        lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(
-            size, forget_bias=1.0, state_is_tuple=True)
+        rnn_kwargs = dict(
+            num_units=size, forget_bias=1.0, state_is_tuple=True)
+        if config.proj_size:
+            lstm_cell = tf.nn.rnn_cell.LSTMCell(
+                num_proj=config.proj_size, **rnn_kwargs)
+        else:
+            lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(**rnn_kwargs)
+
         if is_training and config.keep_prob < 1:
             lstm_cell = tf.nn.rnn_cell.DropoutWrapper(
                 lstm_cell, output_keep_prob=config.keep_prob)
@@ -76,9 +83,9 @@ class Model:
         outputs, state = tf.nn.rnn(
             cell, inputs, initial_state=self._initial_state)
 
-        output = tf.reshape(tf.concat(1, outputs), [-1, size])
+        output = tf.reshape(tf.concat(1, outputs), [-1, out_size])
         softmax_w = tf.get_variable(
-            'softmax_w', [vocab_size, size], dtype=data_type())
+            'softmax_w', [vocab_size, out_size], dtype=data_type())
         softmax_b = tf.get_variable(
             'softmax_b', [vocab_size], dtype=data_type())
         logits = tf.matmul(output, softmax_w, transpose_b=True) + softmax_b
@@ -167,8 +174,10 @@ The hyperparameters used in the model:
 - batch_size - the batch size
 """
 
+
 class DefaultConfig:
     use_nce = False
+    proj_size = None
 
 
 class SmallConfig(DefaultConfig):
@@ -176,9 +185,10 @@ class SmallConfig(DefaultConfig):
     init_scale = 0.1
     learning_rate = 0.4
     max_grad_norm = 5
-    num_layers = 2
+    num_layers = 1
     num_steps = 20
     hidden_size = 256
+    proj_size = 128
     max_epoch = 4
     max_max_epoch = 13
     keep_prob = 1.0
@@ -192,9 +202,10 @@ class MediumConfig(DefaultConfig):
     init_scale = 0.05
     learning_rate = 0.2
     max_grad_norm = 5
-    num_layers = 2
+    num_layers = 1
     num_steps = 20
     hidden_size = 1024
+    proj_size = 512
     max_epoch = 6
     max_max_epoch = 39
     keep_prob = 0.9
