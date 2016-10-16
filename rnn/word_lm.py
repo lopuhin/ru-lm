@@ -214,21 +214,9 @@ class MediumConfig(DefaultConfig):
     vocab_size = 200000
 
 
-class MediumNCEConfig(DefaultConfig):
+class MediumNCEConfig(MediumConfig):
     """Medium NCE config."""
     use_nce = True
-    init_scale = 0.01
-    learning_rate = 0.1
-    max_grad_norm = 5
-    num_layers = 2
-    num_steps = 20
-    hidden_size = 1024
-    max_epoch = 6
-    max_max_epoch = 39
-    keep_prob = 0.9
-    lr_decay = 0.8
-    batch_size = 64
-    vocab_size = 200000
 
 
 class LargeConfig(DefaultConfig):
