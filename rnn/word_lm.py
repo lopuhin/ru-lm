@@ -1,7 +1,9 @@
-import time
+from collections import deque
 from pathlib import Path
+import time
 
 import numpy as np
+import progressbar
 import tensorflow as tf
 
 from rnn import reader
@@ -93,7 +95,7 @@ class Model:
         loss = tf.nn.seq2seq.sequence_loss_by_example(
             [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
-        self._cost = tf.reduce_sum(loss) / batch_size
+        self._cost = tf.reduce_sum(loss)
         if config.use_nce:
             train_loss = tf.add_n(
                 [tf.nn.nce_loss(
@@ -258,9 +260,8 @@ class TestConfig:
 
 def run_epoch(session, model, eval_op=None, verbose=False):
     """Runs the model on the given data."""
-    start_time = time.time()
-    costs = total_costs = 0.
-    iters = total_iters = 0
+    total_costs = 0.
+    total_iters = 0
     state = session.run(model.initial_state)
 
     fetches = {
@@ -269,6 +270,11 @@ def run_epoch(session, model, eval_op=None, verbose=False):
     }
     if eval_op is not None:
         fetches['eval_op'] = eval_op
+
+    costs = deque(maxlen=100)
+    step_size = model.input.batch_size * model.input.num_steps
+    if verbose:
+        bar = make_progressbar(model.input.epoch_size * step_size)
 
     for step in range(model.input.epoch_size):
         feed_dict = {}
@@ -280,23 +286,29 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         cost = vals['cost']
         state = vals['final_state']
 
-        costs += cost
+        costs.append(cost)
         total_costs += cost
-        iters += model.input.num_steps
-        total_iters += model.input.num_steps
+        total_iters += step_size
 
-        t = time.time()
-        dt = t - start_time
-        if verbose and ((iters == total_iters and dt > 5.) or dt > 30.):
-            print('{:.4f} perplexity: {:.3f} speed: {:.0f} wps'.format(
-                step * 1.0 / model.input.epoch_size,
-                np.exp(costs / iters),
-                iters * model.input.batch_size / dt))
-            start_time = t
-            costs = 0.
-            iters = 0
+        if verbose:
+            bar.update(total_iters, pplx=np.exp(np.mean(costs) / step_size))
 
+    if verbose:
+        bar.finish()
     return np.exp(total_costs / total_iters)
+
+
+def make_progressbar(max_value: int):
+    return progressbar.ProgressBar(
+        max_value=max_value,
+        widgets=[
+            progressbar.DynamicMessage('pplx'), ', ',
+            progressbar.FileTransferSpeed(unit='it', prefixes=['']), ', ',
+            progressbar.SimpleProgress(), ',',
+            progressbar.Percentage(), ' ',
+            progressbar.Bar(), ' ',
+            progressbar.AdaptiveETA(),
+        ]).start()
 
 
 def get_config():
