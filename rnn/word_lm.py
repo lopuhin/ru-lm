@@ -99,16 +99,14 @@ class Model:
             [tf.ones([batch_size * num_steps], dtype=data_type())])
         self.cost = tf.reduce_sum(loss)
         if config.use_nce:
-            train_loss = tf.add_n(
-                [tf.nn.nce_loss(
-                    softmax_w, softmax_b,
-                    inputs=out,
-                    labels=tf.expand_dims(self.ys[:, idx], 1),
-                    num_sampled=batch_size * 32,
-                    num_classes=vocab_size,
-                ) for idx, out in enumerate(outputs)])
-            # FIXME - don't we need to divide train_loss by len(outputs) ?
-            self.train_cost = tf.reduce_sum(train_loss) / batch_size
+            train_loss = tf.nn.nce_loss(
+                softmax_w, softmax_b,
+                inputs=output,
+                labels=tf.expand_dims(labels, 1),
+                num_sampled=batch_size * num_steps * 8,
+                num_classes=vocab_size,
+            )
+            self.train_cost = tf.reduce_mean(train_loss)
         else:
             self.train_cost = self.cost
         self.final_state = state
