@@ -1,6 +1,5 @@
 from collections import deque
 from pathlib import Path
-import time
 
 import numpy as np
 import progressbar
@@ -218,7 +217,7 @@ class MediumConfig(DefaultConfig):
     keep_prob = 1.0
     lr_decay = 0.8
     batch_size = 128
-    vocab_size = 200000
+    vocab_size = 150000
 
 
 class MediumNCEConfig(MediumConfig):
@@ -258,12 +257,35 @@ class TestConfig:
     vocab_size = 10000
 
 
-def run_epoch(session, model, eval_op=None, verbose=False):
+def run_train_epoch(session, model, train_data):
     """Runs the model on the given data."""
-    total_costs = 0.
-    total_iters = 0
-    state = session.run(model.initial_state)
+    bar = make_progressbar(len(train_data))  # TODO a bit more?
+    train_batch_step = 50 * 100  # 0000  TODO
+    costs = 0.
+    iters = 0
+    for train_batch_start in range(0, len(train_data), train_batch_step):
+        train_batch = train_data[
+            train_batch_start: train_batch_start + train_batch_step]
+        # TODO - set it
+        step_size = model.input.batch_size * model.input.num_steps
+        epoch_size = len(train_batch) // step_size
+        costs, iters = run_epoch(
+            session, model, epoch_size, eval_op=model.train_op,
+            bar=bar, total_costs=costs, total_iters=iters)
 
+    bar.finish()
+    return np.exp(costs / iters)
+
+
+def run_test_epoch(session, model):
+    costs, iters = run_epoch(session, model, epoch_size=model.input.epoch_size)
+    return np.exp(costs / iters)
+
+
+def run_epoch(session, model, epoch_size, eval_op=None, bar=None,
+              total_costs=0.0, total_iters=0):
+
+    state = session.run(model.initial_state)
     fetches = {
         'cost': model.train_cost if model.is_training else model.cost,
         'final_state': model.final_state,
@@ -273,15 +295,11 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
     costs = deque(maxlen=100)
     step_size = model.input.batch_size * model.input.num_steps
-    if verbose:
-        bar = make_progressbar(model.input.epoch_size * step_size)
-
-    for step in range(model.input.epoch_size):
+    for _ in range(epoch_size):
         feed_dict = {}
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
             feed_dict[h] = state[i].h
-
         vals = session.run(fetches, feed_dict)
         cost = vals['cost']
         state = vals['final_state']
@@ -289,13 +307,10 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         costs.append(cost)
         total_costs += cost
         total_iters += step_size
-
-        if verbose:
+        if bar is not None:
             bar.update(total_iters, pplx=np.exp(np.mean(costs) / step_size))
 
-    if verbose:
-        bar.finish()
-    return np.exp(total_costs / total_iters)
+    return total_costs, total_iters
 
 
 def make_progressbar(max_value: int):
@@ -340,7 +355,7 @@ def main(_):
 
         with tf.name_scope('Train'):
             train_input = Input(
-                config=config, data=train_data, name='TrainInput')
+                config=config, data=train_data[:1], name='TrainInput')
             with tf.variable_scope(
                     'Model', reuse=None, initializer=initializer):
                 m = Model(is_training=True, config=config, input_=train_input)
@@ -371,15 +386,14 @@ def main(_):
 
                 print('Epoch: {} Learning rate: {:.3f}'
                       .format(i + 1, session.run(m.lr)))
-                train_perplexity = run_epoch(
-                    session, m, eval_op=m.train_op, verbose=True)
+                train_perplexity = run_train_epoch(session, m, train_data)
                 print('Epoch: {} Train Perplexity: {:.3f}'
                       .format(i + 1, train_perplexity))
-                valid_perplexity = run_epoch(session, mvalid)
+                valid_perplexity = run_test_epoch(session, mvalid)
                 print('Epoch: {} Valid Perplexity: {:.3f}'
                       .format(i + 1, valid_perplexity))
 
-            test_perplexity = run_epoch(session, mtest)
+            test_perplexity = run_test_epoch(session, mtest)
             print('Test Perplexity: {:.3f}'.format(test_perplexity))
 
             if FLAGS.save_path:
