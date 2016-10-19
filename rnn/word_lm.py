@@ -38,14 +38,14 @@ class Input:
         self.batch_size = batch_size = config.batch_size
         self.num_steps = num_steps = config.num_steps
         self.epoch_size = ((len(data) // batch_size) - 1) // num_steps
-        self.input_data, self.targets = reader.producer(
-            data, batch_size, num_steps, name=name)
+        self.data = data
+        self.name = name
 
 
 class Model:
     """The model."""
 
-    def __init__(self, is_training: bool, config, input_):
+    def __init__(self, is_training: bool, config, input_: Input):
         self.is_training = is_training
         self._input = input_
 
@@ -71,10 +71,13 @@ class Model:
 
         self._initial_state = cell.zero_state(batch_size, data_type())
 
+        self.xs = tf.placeholder(tf.int32, [None, num_steps])
+        self.ys = tf.placeholder(tf.int32, [None, num_steps])
+
         with tf.device('/cpu:0'):
             embedding = tf.get_variable(
                 'embedding', [vocab_size, size], dtype=data_type())
-            inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
+            inputs = tf.nn.embedding_lookup(embedding, self.xs)
 
         if is_training and config.keep_prob < 1:
             inputs = tf.nn.dropout(inputs, config.keep_prob)
@@ -90,7 +93,7 @@ class Model:
         softmax_b = tf.get_variable(
             'softmax_b', [vocab_size], dtype=data_type())
         logits = tf.matmul(output, softmax_w, transpose_b=True) + softmax_b
-        labels = tf.reshape(input_.targets, [-1])
+        labels = tf.reshape(self.ys, [-1])
         loss = tf.nn.seq2seq.sequence_loss_by_example(
             [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
@@ -100,7 +103,7 @@ class Model:
                 [tf.nn.nce_loss(
                     softmax_w, softmax_b,
                     inputs=out,
-                    labels=tf.expand_dims(input_.targets[:, idx], 1),
+                    labels=tf.expand_dims(self.ys[:, idx], 1),
                     num_sampled=batch_size * 32,
                     num_classes=vocab_size,
                 ) for idx, out in enumerate(outputs)])
@@ -257,46 +260,35 @@ class TestConfig:
     vocab_size = 10000
 
 
-def run_train_epoch(session, model, train_data):
+def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
     """Runs the model on the given data."""
-    bar = make_progressbar(len(train_data))  # TODO a bit more?
-    train_batch_step = 50 * 100  # 0000  TODO
-    costs = 0.
-    iters = 0
-    for train_batch_start in range(0, len(train_data), train_batch_step):
-        train_batch = train_data[
-            train_batch_start: train_batch_start + train_batch_step]
-        # TODO - set it
-        step_size = model.input.batch_size * model.input.num_steps
-        epoch_size = len(train_batch) // step_size
-        costs, iters = run_epoch(
-            session, model, epoch_size, eval_op=model.train_op,
-            bar=bar, total_costs=costs, total_iters=iters)
+    data = model.input.data
+    bar = make_progressbar(len(data)) if verbose else None
+    total_costs = 0.
+    total_iters = 0
+    costs = deque(maxlen=100)
+    step_size = model.input.batch_size * model.input.num_steps
 
-    bar.finish()
-    return np.exp(costs / iters)
-
-
-def run_test_epoch(session, model):
-    costs, iters = run_epoch(session, model, epoch_size=model.input.epoch_size)
-    return np.exp(costs / iters)
-
-
-def run_epoch(session, model, epoch_size, eval_op=None, bar=None,
-              total_costs=0.0, total_iters=0):
-
-    state = session.run(model.initial_state)
     fetches = {
         'cost': model.train_cost if model.is_training else model.cost,
         'final_state': model.final_state,
     }
-    if eval_op is not None:
-        fetches['eval_op'] = eval_op
+    if model.is_training:
+        fetches['eval_op'] = model.train_op
+    state = session.run(model.initial_state)
 
-    costs = deque(maxlen=100)
-    step_size = model.input.batch_size * model.input.num_steps
-    for _ in range(epoch_size):
-        feed_dict = {}
+    for batch_start in range(0, len(data) - 1, step_size):
+        xs = data[batch_start: batch_start + step_size]
+        ys = data[batch_start + 1: batch_start + step_size + 1]
+        if len(ys) < step_size:
+            break  # skip last incomplete batch (FIXME?)
+        xs, ys = [
+            np.reshape(it, [model.input.batch_size, model.input.num_steps])
+            for it in [xs, ys]]
+        feed_dict = {
+            model.xs: xs,
+            model.ys: ys,
+        }
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
             feed_dict[h] = state[i].h
@@ -310,7 +302,10 @@ def run_epoch(session, model, epoch_size, eval_op=None, bar=None,
         if bar is not None:
             bar.update(total_iters, pplx=np.exp(np.mean(costs) / step_size))
 
-    return total_costs, total_iters
+    if verbose:
+        bar.finish()
+    return np.exp(total_costs / total_iters)
+
 
 
 def make_progressbar(max_value: int):
@@ -355,7 +350,7 @@ def main(_):
 
         with tf.name_scope('Train'):
             train_input = Input(
-                config=config, data=train_data[:1], name='TrainInput')
+                config=config, data=train_data, name='TrainInput')
             with tf.variable_scope(
                     'Model', reuse=None, initializer=initializer):
                 m = Model(is_training=True, config=config, input_=train_input)
@@ -386,14 +381,14 @@ def main(_):
 
                 print('Epoch: {} Learning rate: {:.3f}'
                       .format(i + 1, session.run(m.lr)))
-                train_perplexity = run_train_epoch(session, m, train_data)
+                train_perplexity = run_epoch(session, m, verbose=True)
                 print('Epoch: {} Train Perplexity: {:.3f}'
                       .format(i + 1, train_perplexity))
-                valid_perplexity = run_test_epoch(session, mvalid)
+                valid_perplexity = run_epoch(session, mvalid, valid_data)
                 print('Epoch: {} Valid Perplexity: {:.3f}'
                       .format(i + 1, valid_perplexity))
 
-            test_perplexity = run_test_epoch(session, mtest)
+            test_perplexity = run_epoch(session, mtest, test_data)
             print('Test Perplexity: {:.3f}'.format(test_perplexity))
 
             if FLAGS.save_path:
