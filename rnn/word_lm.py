@@ -253,14 +253,11 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
         xs = data[batch_start: batch_start + step_size]
         ys = data[batch_start + 1: batch_start + step_size + 1]
         if len(ys) < step_size:
-            break  # skip last incomplete batch (FIXME?)
+            break  # skip last incomplete batch
         xs, ys = [
             np.reshape(it, [model.input.batch_size, model.input.num_steps])
             for it in [xs, ys]]
-        feed_dict = {
-            model.xs: xs,
-            model.ys: ys,
-        }
+        feed_dict = {model.xs: xs, model.ys: ys}
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
             feed_dict[h] = state[i].h
@@ -355,11 +352,11 @@ def main(_):
                 train_perplexity = run_epoch(session, m, verbose=True)
                 print('Epoch: {} Train Perplexity: {:.3f}'
                       .format(i + 1, train_perplexity))
-                valid_perplexity = run_epoch(session, mvalid, valid_data)
+                valid_perplexity = run_epoch(session, mvalid)
                 print('Epoch: {} Valid Perplexity: {:.3f}'
                       .format(i + 1, valid_perplexity))
 
-            test_perplexity = run_epoch(session, mtest, test_data)
+            test_perplexity = run_epoch(session, mtest)
             print('Test Perplexity: {:.3f}'.format(test_perplexity))
 
             if FLAGS.save_path:
