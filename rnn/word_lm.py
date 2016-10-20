@@ -216,15 +216,17 @@ class MediumNCEConfig(MediumConfig):
 
 class LargeConfig(DefaultConfig):
     """Large config."""
-    init_scale = 0.04
-    learning_rate = 0.1
+    init_scale = 0.05
+    learning_rate = 0.2
     max_grad_norm = 5
-    num_layers = 2
+    num_layers = 1
     num_steps = 20
-    hidden_size = 2048
+    embedding_size = 768
+    hidden_size = 3076
+    proj_size = 768
     max_epoch = 14
     max_max_epoch = 55
-    keep_prob = 0.8
+    keep_prob = 1.0
     lr_decay = 1 / 1.15
     batch_size = 128
     vocab_size = 200000
@@ -357,7 +359,7 @@ def main(_):
 
         sv = tf.train.Supervisor(logdir=FLAGS.save_path)
         tf_config = tf.ConfigProto()
-        tf_config.gpu_options.allow_growth = True
+        # tf_config.gpu_options.allow_growth = True
         with sv.managed_session(config=tf_config) as session:
             for i in range(config.max_max_epoch):
                 lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
