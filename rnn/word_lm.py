@@ -47,7 +47,7 @@ class Model:
 
     def __init__(self, is_training: bool, config, input_: Input):
         self.is_training = is_training
-        self._input = input_
+        self.input = input_
 
         batch_size = input_.batch_size
         num_steps = input_.num_steps
@@ -69,7 +69,7 @@ class Model:
         cell = tf.nn.rnn_cell.MultiRNNCell(
             [lstm_cell] * config.num_layers, state_is_tuple=True)
 
-        self._initial_state = cell.zero_state(batch_size, data_type())
+        self.initial_state = cell.zero_state(batch_size, data_type())
 
         self.xs = tf.placeholder(tf.int32, [None, num_steps])
         self.ys = tf.placeholder(tf.int32, [None, num_steps])
@@ -85,7 +85,7 @@ class Model:
         inputs = [tf.squeeze(input_step, [1])
                   for input_step in tf.split(1, num_steps, inputs)]
         outputs, state = tf.nn.rnn(
-            cell, inputs, initial_state=self._initial_state)
+            cell, inputs, initial_state=self.initial_state)
 
         output = tf.reshape(tf.concat(1, outputs), [-1, out_size])
         softmax_w = tf.get_variable(
@@ -97,7 +97,7 @@ class Model:
         loss = tf.nn.seq2seq.sequence_loss_by_example(
             [logits], [labels],
             [tf.ones([batch_size * num_steps], dtype=data_type())])
-        self._cost = tf.reduce_sum(loss)
+        self.cost = tf.reduce_sum(loss)
         if config.use_nce:
             train_loss = tf.add_n(
                 [tf.nn.nce_loss(
@@ -108,59 +108,31 @@ class Model:
                     num_classes=vocab_size,
                 ) for idx, out in enumerate(outputs)])
             # FIXME - don't we need to divide train_loss by len(outputs) ?
-            self._train_cost = tf.reduce_sum(train_loss) / batch_size
+            self.train_cost = tf.reduce_sum(train_loss) / batch_size
         else:
-            self._train_cost = self._cost
-        self._final_state = state
+            self.train_cost = self.cost
+        self.final_state = state
 
         if not self.is_training:
             return
 
-        self._lr = tf.Variable(0.0, trainable=False)
+        self.lr = tf.Variable(0.0, trainable=False)
         tvars = tf.trainable_variables()
-        grads = tf.gradients(self._train_cost, tvars)
+        grads = tf.gradients(self.train_cost, tvars)
         if config.max_grad_norm:
             grads, _ = tf.clip_by_global_norm(
-                tf.gradients(self._train_cost, tvars), config.max_grad_norm)
-        optimizer = tf.train.AdagradOptimizer(self._lr)
-        self._train_op = optimizer.apply_gradients(
+                tf.gradients(self.train_cost, tvars), config.max_grad_norm)
+        optimizer = tf.train.AdagradOptimizer(self.lr)
+        self.train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step=tf.contrib.framework.get_or_create_global_step())
 
         self._new_lr = tf.placeholder(
             tf.float32, shape=[], name='new_learning_rate')
-        self._lr_update = tf.assign(self._lr, self._new_lr)
+        self._lr_update = tf.assign(self.lr, self._new_lr)
 
     def assign_lr(self, session, lr_value):
         session.run(self._lr_update, feed_dict={self._new_lr: lr_value})
-
-    @property
-    def input(self):
-        return self._input
-
-    @property
-    def initial_state(self):
-        return self._initial_state
-
-    @property
-    def cost(self):
-        return self._cost
-
-    @property
-    def train_cost(self):
-        return self._train_cost
-
-    @property
-    def final_state(self):
-        return self._final_state
-
-    @property
-    def lr(self):
-        return self._lr
-
-    @property
-    def train_op(self):
-        return self._train_op
 
 
 """
@@ -305,7 +277,6 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
     if verbose:
         bar.finish()
     return np.exp(total_costs / total_iters)
-
 
 
 def make_progressbar(max_value: int):
