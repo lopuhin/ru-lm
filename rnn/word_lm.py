@@ -183,7 +183,7 @@ class MediumConfig(DefaultConfig):
     max_grad_norm = 5
     num_layers = 1
     num_steps = 20
-    hidden_size = 2024
+    hidden_size = 2048
     proj_size = 512
     max_epoch = 4
     max_max_epoch = 10
