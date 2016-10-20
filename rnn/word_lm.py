@@ -340,7 +340,9 @@ def main(_):
                     is_training=False, config=eval_config, input_=test_input)
 
         sv = tf.train.Supervisor(logdir=FLAGS.save_path)
-        with sv.managed_session() as session:
+        tf_config = tf.ConfigProto()
+        tf_config.gpu_options.allow_growth = True
+        with sv.managed_session(config=tf_config) as session:
             for i in range(config.max_max_epoch):
                 lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
                 m.assign_lr(session, config.learning_rate * lr_decay)
