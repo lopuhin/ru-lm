@@ -68,7 +68,7 @@ def load_raw_data(data_path: Path, vocab_size: int):
     if all(cached(p).exists() for p in paths):
         print('Loading cached corpus')
         train_data, valid_data, test_data = [
-            np.load(str(cached(p))) for p in paths]
+            np.load(str(cached(p)), mmap_mode='r') for p in paths]
         print('done.')
     else:
         word_to_id = _build_vocab(train_path, vocab_size)
