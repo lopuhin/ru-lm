@@ -51,12 +51,14 @@ class Model:
 
         batch_size = input_.batch_size
         num_steps = input_.num_steps
-        size = config.hidden_size
-        out_size = config.proj_size or size
+        hidden_size = config.hidden_size
+        embedding_size = config.embedding_size or hidden_size
+        out_size = config.proj_size or hidden_size
         vocab_size = config.vocab_size
+        dtype = data_type()
 
         rnn_kwargs = dict(
-            num_units=size, forget_bias=1.0, state_is_tuple=True)
+            num_units=hidden_size, forget_bias=1.0, state_is_tuple=True)
         if config.proj_size:
             lstm_cell = tf.nn.rnn_cell.LSTMCell(
                 num_proj=config.proj_size, **rnn_kwargs)
@@ -69,41 +71,52 @@ class Model:
         cell = tf.nn.rnn_cell.MultiRNNCell(
             [lstm_cell] * config.num_layers, state_is_tuple=True)
 
-        self.initial_state = cell.zero_state(batch_size, data_type())
+        self.initial_state = cell.zero_state(batch_size, dtype)
 
         self.xs = tf.placeholder(tf.int32, [None, num_steps])
         self.ys = tf.placeholder(tf.int32, [None, num_steps])
 
         with tf.device('/cpu:0'):
             embedding = tf.get_variable(
-                'embedding', [vocab_size, size], dtype=data_type())
+                'embedding', [vocab_size, embedding_size], dtype=dtype)
             inputs = tf.nn.embedding_lookup(embedding, self.xs)
 
         if is_training and config.keep_prob < 1:
             inputs = tf.nn.dropout(inputs, config.keep_prob)
 
+        if hidden_size != embedding_size:
+            input_proj_w = tf.get_variable(
+                'input_proj_w', [embedding_size, hidden_size], dtype=dtype)
+            input_proj_b = tf.get_variable(
+                'input_proj_b', [hidden_size], dtype=dtype)
+            inputs = (
+                tf.matmul(tf.reshape(inputs, [-1, embedding_size]),
+                          input_proj_w)
+                + input_proj_b)
+            inputs = tf.reshape(inputs, [-1, num_steps, hidden_size])
+
         inputs = [tf.squeeze(input_step, [1])
                   for input_step in tf.split(1, num_steps, inputs)]
+
         outputs, state = tf.nn.rnn(
             cell, inputs, initial_state=self.initial_state)
 
         output = tf.reshape(tf.concat(1, outputs), [-1, out_size])
         softmax_w = tf.get_variable(
-            'softmax_w', [vocab_size, out_size], dtype=data_type())
-        softmax_b = tf.get_variable(
-            'softmax_b', [vocab_size], dtype=data_type())
+            'softmax_w', [vocab_size, out_size], dtype=dtype)
+        softmax_b = tf.get_variable('softmax_b', [vocab_size], dtype=dtype)
         logits = tf.matmul(output, softmax_w, transpose_b=True) + softmax_b
         labels = tf.reshape(self.ys, [-1])
         loss = tf.nn.seq2seq.sequence_loss_by_example(
             [logits], [labels],
-            [tf.ones([batch_size * num_steps], dtype=data_type())])
+            [tf.ones([batch_size * num_steps], dtype=dtype)])
         self.cost = tf.reduce_sum(loss)
         if config.use_nce:
             train_loss = tf.nn.nce_loss(
                 softmax_w, softmax_b,
                 inputs=output,
                 labels=tf.expand_dims(labels, 1),
-                num_sampled=batch_size * num_steps * 8,
+                num_sampled=batch_size * num_steps * 3,
                 num_classes=vocab_size,
             )
             self.train_cost = tf.reduce_mean(train_loss)
@@ -152,6 +165,7 @@ The hyperparameters used in the model:
 class DefaultConfig:
     use_nce = False
     proj_size = None
+    embedding_size = None
 
 
 class SmallConfig(DefaultConfig):
@@ -161,6 +175,7 @@ class SmallConfig(DefaultConfig):
     max_grad_norm = 5
     num_layers = 1
     num_steps = 20
+    embedding_size = 128
     hidden_size = 256
     proj_size = 128
     max_epoch = 4
@@ -183,6 +198,7 @@ class MediumConfig(DefaultConfig):
     max_grad_norm = 5
     num_layers = 1
     num_steps = 20
+    embedding_size = 512
     hidden_size = 2048
     proj_size = 512
     max_epoch = 4
