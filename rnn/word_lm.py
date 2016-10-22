@@ -13,7 +13,8 @@ logging = tf.logging
 
 flags.DEFINE_string(
     'model', 'small',
-    'A type of model. Possible options are: small, medium, medium-nce, large.')
+    'A type of model. Possible options are: '
+    'small, small-sampled, medium, medium-sampled, large.')
 flags.DEFINE_string(
     'data_path', None,
     'Where the training/test data is stored.')
@@ -118,14 +119,20 @@ class Model:
             [logits], [labels],
             [tf.ones([self.batch_size * num_steps], dtype=dtype)])
         self.cost = tf.reduce_sum(loss)
-        if config.use_nce:
-            train_loss = tf.nn.nce_loss(
-                softmax_w, softmax_b,
-                inputs=output,
-                labels=tf.expand_dims(labels, 1),
-                num_sampled=self.batch_size * num_steps * 3,
-                num_classes=vocab_size,
-            )
+        sampled_loss_kwargs = dict(
+            weights=softmax_w,
+            biases=softmax_b,
+            inputs=output,
+            labels=tf.expand_dims(labels, 1),
+            num_sampled=config.num_sampled,
+            num_classes=vocab_size,
+            remove_accidental_hits=False,
+        )
+        if config.sampled_loss == 'nce':
+            train_loss = tf.nn.nce_loss(**sampled_loss_kwargs)
+            self.train_cost = tf.reduce_mean(train_loss)
+        elif config.sampled_loss == 'softmax':
+            train_loss = tf.nn.sampled_softmax_loss(**sampled_loss_kwargs)
             self.train_cost = tf.reduce_mean(train_loss)
         else:
             self.train_cost = self.cost
@@ -176,7 +183,7 @@ The hyperparameters used in the model:
 
 
 class DefaultConfig:
-    use_nce = False
+    sampled_loss = None
     proj_size = None
     embedding_size = None
 
@@ -196,12 +203,13 @@ class SmallConfig(DefaultConfig):
     keep_prob = 1.0
     lr_decay = 0.5
     batch_size = 32
-    vocab_size = 10000
+    vocab_size = 100000
 
 
-class SmallNCEConfig(SmallConfig):
-    """Small NCE config."""
-    use_nce = True
+class SmallSampledConfig(SmallConfig):
+    """Small sampled loss config."""
+    sampled_loss = 'softmax'
+    num_sampled = 1024
 
 
 class MediumConfig(DefaultConfig):
@@ -222,9 +230,11 @@ class MediumConfig(DefaultConfig):
     vocab_size = 150000
 
 
-class MediumNCEConfig(MediumConfig):
-    """Medium NCE config."""
-    use_nce = True
+class MediumSampledConfig(MediumConfig):
+    """Medium sampled config."""
+    sampled_loss = 'softmax'
+    num_sampled = 4092
+    vocab_size = 300000
 
 
 class LargeConfig(DefaultConfig):
@@ -322,9 +332,9 @@ def make_progressbar(max_value: int):
 def get_config():
     return {
         'small': SmallConfig(),
-        'small-nce': SmallNCEConfig(),
+        'small-sampled': SmallSampledConfig(),
         'medium': MediumConfig(),
-        'medium-nce': MediumNCEConfig(),
+        'medium-sampled': MediumSampledConfig(),
         'large': LargeConfig(),
         'test': TestConfig(),
     }[FLAGS.model]
