@@ -394,14 +394,15 @@ def main(_):
                 train_perplexity = run_epoch(session, m, verbose=True)
                 print('Epoch: {} Train Perplexity: {:.3f}'
                       .format(i + 1, train_perplexity))
-                valid_perplexity = run_epoch(session, mvalid)
-                print('Epoch: {} Valid Perplexity: {:.3f}'
-                      .format(i + 1, valid_perplexity))
 
                 if FLAGS.save_path:
                     save_path = str(Path(FLAGS.save_path) / 'model')
                     print('Saving model to {}.'.format(save_path))
                     sv.saver.save(session, save_path, global_step=sv.global_step)
+
+                valid_perplexity = run_epoch(session, mvalid)
+                print('Epoch: {} Valid Perplexity: {:.3f}'
+                      .format(i + 1, valid_perplexity))
 
             test_perplexity = run_epoch(session, mtest)
             print('Test Perplexity: {:.3f}'.format(test_perplexity))
