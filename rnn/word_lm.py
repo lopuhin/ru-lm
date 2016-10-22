@@ -38,6 +38,7 @@ class Input:
     def __init__(self, config, data, name=None):
         self.batch_size = batch_size = config.batch_size
         self.num_steps = num_steps = config.num_steps
+        self.word_length = config.word_length
         self.epoch_size = ((len(data) // batch_size) - 1) // num_steps
         self.data = data
         self.name = name
@@ -60,10 +61,11 @@ class Model:
         self.ys = tf.placeholder(tf.int32, [None, num_steps])
         self.batch_size = tf.placeholder(tf.int32, [])
 
-        if config.cnn_inputs:
+        self.cnn_inputs = bool(config.cnn_inputs)
+        if self.cnn_inputs:
             self.xs = tf.placeholder(
                 tf.int32, [None, num_steps, config.word_length])
-            inputs = self._cnn_inputs(config)
+            inputs = self._get_cnn_inputs(config)
             embedding_out_size = inputs.get_shape()[-1].value
         else:
             self.xs = tf.placeholder(tf.int32, [None, num_steps])
@@ -172,7 +174,7 @@ class Model:
             tf.add_to_collection('{}_{}_c'.format(prefix, i), s.c)
             tf.add_to_collection('{}_{}_h'.format(prefix, i), s.h)
 
-    def _cnn_inputs(self, config):
+    def _get_cnn_inputs(self, config):
         dtype = data_type()
         embedding = tf.get_variable(
             'embedding',
@@ -221,11 +223,15 @@ The hyperparameters used in the model:
 
 
 class DefaultConfig:
-    sampled_loss = None
     proj_size = None
     embedding_size = None
-    cnn_inputs = None
+
+    sampled_loss = None
     num_sampled = None
+
+    cnn_inputs = None
+    char_vocab_size = None
+    word_length = None
 
 
 class SmallConfig(DefaultConfig):
@@ -341,9 +347,15 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
         ys = data[batch_start + 1: batch_start + step_size + 1]
         if len(ys) < step_size:
             break  # skip last incomplete batch
-        xs, ys = [
-            np.reshape(it, [batch_size, model.input.num_steps])
-            for it in [xs, ys]]
+        if model.cnn_inputs:
+            ys = np.reshape(ys[:, -1], [batch_size, model.input.num_steps])
+            xs = np.reshape(
+                xs[:, :-1],
+                [batch_size, model.input.num_steps, model.input.word_length])
+        else:
+            xs, ys = [
+                np.reshape(it, [batch_size, model.input.num_steps])
+                for it in [xs, ys]]
         feed_dict = {model.xs: xs, model.ys: ys, model.batch_size: batch_size}
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
@@ -397,8 +409,11 @@ def main(_):
     eval_config.batch_size = 1
     eval_config.num_steps = 1
 
-    train_data, valid_data, test_data = \
-        reader.load_raw_data(Path(FLAGS.data_path), config.vocab_size)
+    train_data, valid_data, test_data = reader.load_raw_data(
+        data_path=Path(FLAGS.data_path),
+        vocab_size=config.vocab_size,
+        char_vocab_size=config.char_vocab_size,
+        word_length=config.word_length)
 
     with tf.Graph().as_default():
         initializer = tf.random_uniform_initializer(
