@@ -49,7 +49,6 @@ class Model:
         self.is_training = is_training
         self.input = input_
 
-        batch_size = input_.batch_size
         num_steps = input_.num_steps
         hidden_size = config.hidden_size
         embedding_size = config.embedding_size or hidden_size
@@ -57,24 +56,12 @@ class Model:
         vocab_size = config.vocab_size
         dtype = data_type()
 
-        rnn_kwargs = dict(
-            num_units=hidden_size, forget_bias=1.0, state_is_tuple=True)
-        if config.proj_size:
-            lstm_cell = tf.nn.rnn_cell.LSTMCell(
-                num_proj=config.proj_size, **rnn_kwargs)
-        else:
-            lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(**rnn_kwargs)
-
-        if is_training and config.keep_prob < 1:
-            lstm_cell = tf.nn.rnn_cell.DropoutWrapper(
-                lstm_cell, output_keep_prob=config.keep_prob)
-        cell = tf.nn.rnn_cell.MultiRNNCell(
-            [lstm_cell] * config.num_layers, state_is_tuple=True)
-
-        self.initial_state = cell.zero_state(batch_size, dtype)
-
         self.xs = tf.placeholder(tf.int32, [None, num_steps])
         self.ys = tf.placeholder(tf.int32, [None, num_steps])
+        self.batch_size = tf.placeholder(tf.int32, [])
+        tf.add_to_collection('input_xs', self.xs)
+        tf.add_to_collection('input_ys', self.ys)
+        tf.add_to_collection('batch_size', self.batch_size)
 
         with tf.device('/cpu:0'):
             embedding = tf.get_variable(
@@ -98,31 +85,52 @@ class Model:
         inputs = [tf.squeeze(input_step, [1])
                   for input_step in tf.split(1, num_steps, inputs)]
 
+        rnn_kwargs = dict(
+            num_units=hidden_size, forget_bias=1.0, state_is_tuple=True)
+        if config.proj_size:
+            lstm_cell = tf.nn.rnn_cell.LSTMCell(
+                num_proj=config.proj_size, **rnn_kwargs)
+        else:
+            lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(**rnn_kwargs)
+
+        if is_training and config.keep_prob < 1:
+            lstm_cell = tf.nn.rnn_cell.DropoutWrapper(
+                lstm_cell, output_keep_prob=config.keep_prob)
+        cell = tf.nn.rnn_cell.MultiRNNCell(
+            [lstm_cell] * config.num_layers, state_is_tuple=True)
+
+        self.initial_state = cell.zero_state(self.batch_size, dtype)
+        self._save_rnn_state('initial_state', self.initial_state)
+
         outputs, state = tf.nn.rnn(
             cell, inputs, initial_state=self.initial_state)
 
         output = tf.reshape(tf.concat(1, outputs), [-1, out_size])
+        tf.add_to_collection('hidden_output', output)
         softmax_w = tf.get_variable(
             'softmax_w', [vocab_size, out_size], dtype=dtype)
         softmax_b = tf.get_variable('softmax_b', [vocab_size], dtype=dtype)
         logits = tf.matmul(output, softmax_w, transpose_b=True) + softmax_b
+        softmax = tf.nn.softmax(logits, name='softmax')
+        tf.add_to_collection('softmax', softmax)
         labels = tf.reshape(self.ys, [-1])
         loss = tf.nn.seq2seq.sequence_loss_by_example(
             [logits], [labels],
-            [tf.ones([batch_size * num_steps], dtype=dtype)])
+            [tf.ones([self.batch_size * num_steps], dtype=dtype)])
         self.cost = tf.reduce_sum(loss)
         if config.use_nce:
             train_loss = tf.nn.nce_loss(
                 softmax_w, softmax_b,
                 inputs=output,
                 labels=tf.expand_dims(labels, 1),
-                num_sampled=batch_size * num_steps * 3,
+                num_sampled=self.batch_size * num_steps * 3,
                 num_classes=vocab_size,
             )
             self.train_cost = tf.reduce_mean(train_loss)
         else:
             self.train_cost = self.cost
         self.final_state = state
+        self._save_rnn_state('final_state', self.final_state)
 
         if not self.is_training:
             return
@@ -144,6 +152,11 @@ class Model:
 
     def assign_lr(self, session, lr_value):
         session.run(self._lr_update, feed_dict={self._new_lr: lr_value})
+
+    def _save_rnn_state(self, prefix, state):
+        for i, s in enumerate(state):
+            tf.add_to_collection('{}_{}_c'.format(prefix, i), s.c)
+            tf.add_to_collection('{}_{}_h'.format(prefix, i), s.h)
 
 
 """
@@ -229,7 +242,7 @@ class LargeConfig(DefaultConfig):
     keep_prob = 1.0
     lr_decay = 1 / 1.15
     batch_size = 128
-    vocab_size = 200000
+    vocab_size = 150000
 
 
 class TestConfig:
@@ -255,7 +268,8 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
     total_costs = 0.
     total_iters = 0
     costs = deque(maxlen=100)
-    step_size = model.input.batch_size * model.input.num_steps
+    batch_size = model.input.batch_size
+    step_size = batch_size * model.input.num_steps
 
     fetches = {
         'cost': model.train_cost if model.is_training else model.cost,
@@ -263,7 +277,7 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
     }
     if model.is_training:
         fetches['eval_op'] = model.train_op
-    state = session.run(model.initial_state)
+    state = session.run(model.initial_state, {model.batch_size: batch_size})
 
     for batch_start in range(0, len(data) - 1, step_size):
         xs = data[batch_start: batch_start + step_size]
@@ -271,9 +285,9 @@ def run_epoch(session: tf.Session, model: Model, verbose: bool=False):
         if len(ys) < step_size:
             break  # skip last incomplete batch
         xs, ys = [
-            np.reshape(it, [model.input.batch_size, model.input.num_steps])
+            np.reshape(it, [batch_size, model.input.num_steps])
             for it in [xs, ys]]
-        feed_dict = {model.xs: xs, model.ys: ys}
+        feed_dict = {model.xs: xs, model.ys: ys, model.batch_size: batch_size}
         for i, (c, h) in enumerate(model.initial_state):
             feed_dict[c] = state[i].c
             feed_dict[h] = state[i].h
@@ -374,13 +388,13 @@ def main(_):
                 print('Epoch: {} Valid Perplexity: {:.3f}'
                       .format(i + 1, valid_perplexity))
 
+                if FLAGS.save_path:
+                    save_path = str(Path(FLAGS.save_path) / 'model')
+                    print('Saving model to {}.'.format(save_path))
+                    sv.saver.save(session, save_path, global_step=sv.global_step)
+
             test_perplexity = run_epoch(session, mtest)
             print('Test Perplexity: {:.3f}'.format(test_perplexity))
-
-            if FLAGS.save_path:
-                print('Saving model to {}.'.format(FLAGS.save_path))
-                sv.saver.save(
-                    session, FLAGS.save_path, global_step=sv.global_step)
 
 
 def run():
