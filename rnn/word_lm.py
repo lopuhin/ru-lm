@@ -57,28 +57,35 @@ class Model:
         vocab_size = config.vocab_size
         dtype = data_type()
 
-        self.xs = tf.placeholder(tf.int32, [None, num_steps])
         self.ys = tf.placeholder(tf.int32, [None, num_steps])
         self.batch_size = tf.placeholder(tf.int32, [])
+
+        if config.cnn_inputs:
+            self.xs = tf.placeholder(
+                tf.int32, [None, num_steps, config.word_length])
+            inputs = self._cnn_inputs(config)
+            embedding_out_size = inputs.get_shape()[-1].value
+        else:
+            self.xs = tf.placeholder(tf.int32, [None, num_steps])
+            with tf.device('/cpu:0'):
+                embedding = tf.get_variable(
+                    'embedding', [vocab_size, embedding_size], dtype=dtype)
+                inputs = tf.nn.embedding_lookup(embedding, self.xs)
+            embedding_out_size = embedding_size
         tf.add_to_collection('input_xs', self.xs)
         tf.add_to_collection('input_ys', self.ys)
         tf.add_to_collection('batch_size', self.batch_size)
 
-        with tf.device('/cpu:0'):
-            embedding = tf.get_variable(
-                'embedding', [vocab_size, embedding_size], dtype=dtype)
-            inputs = tf.nn.embedding_lookup(embedding, self.xs)
-
         if is_training and config.keep_prob < 1:
             inputs = tf.nn.dropout(inputs, config.keep_prob)
 
-        if hidden_size != embedding_size:
+        if hidden_size != embedding_out_size:
             input_proj_w = tf.get_variable(
-                'input_proj_w', [embedding_size, hidden_size], dtype=dtype)
+                'input_proj_w', [embedding_out_size, hidden_size], dtype=dtype)
             input_proj_b = tf.get_variable(
                 'input_proj_b', [hidden_size], dtype=dtype)
             inputs = (
-                tf.matmul(tf.reshape(inputs, [-1, embedding_size]),
+                tf.matmul(tf.reshape(inputs, [-1, embedding_out_size]),
                           input_proj_w)
                 + input_proj_b)
             inputs = tf.reshape(inputs, [-1, num_steps, hidden_size])
@@ -165,6 +172,37 @@ class Model:
             tf.add_to_collection('{}_{}_c'.format(prefix, i), s.c)
             tf.add_to_collection('{}_{}_h'.format(prefix, i), s.h)
 
+    def _cnn_inputs(self, config):
+        dtype = data_type()
+        embedding = tf.get_variable(
+            'embedding',
+            [config.char_vocab_size, config.embedding_size], dtype=dtype)
+        inputs = tf.nn.embedding_lookup(embedding, self.xs)
+        inputs = tf.expand_dims(
+            tf.reshape(inputs, [-1, config.word_length, config.embedding_size]), -1)
+        pooled_outputs = []
+        for filter_size, num_filters in config.cnn_inputs:
+            with tf.variable_scope('Conv-{}'.format(filter_size)):
+                filter_shape = [
+                    filter_size, config.embedding_size, 1, num_filters]
+                conv_w = tf.get_variable('w', filter_shape, dtype=dtype)
+                conv_b = tf.get_variable('b', [num_filters], dtype=dtype)
+                conv = tf.nn.conv2d(
+                    inputs, conv_w, strides=[1, 1, 1, 1], padding='VALID',
+                    name='conv')
+                h = tf.nn.relu(tf.nn.bias_add(conv, conv_b), name='relu')
+                pooled = tf.nn.max_pool(
+                    h,
+                    ksize=[1, config.word_length - filter_size + 1, 1, 1],
+                    strides=[1, 1, 1, 1],
+                    padding='VALID',
+                    name='pool')
+                pooled_outputs.append(pooled)
+        pooled_output = tf.concat(3, pooled_outputs)
+        return tf.reshape(
+            pooled_output,
+            [-1, config.num_steps, pooled_output.get_shape()[-1].value])
+
 
 """
 The hyperparameters used in the model:
@@ -186,6 +224,8 @@ class DefaultConfig:
     sampled_loss = None
     proj_size = None
     embedding_size = None
+    cnn_inputs = None
+    num_sampled = None
 
 
 class SmallConfig(DefaultConfig):
@@ -203,13 +243,20 @@ class SmallConfig(DefaultConfig):
     keep_prob = 1.0
     lr_decay = 0.5
     batch_size = 32
-    vocab_size = 100000
+    vocab_size = 10000
 
 
 class SmallSampledConfig(SmallConfig):
     """Small sampled loss config."""
     sampled_loss = 'softmax'
     num_sampled = 1024
+
+
+class SmallCNNConfig(SmallConfig):
+    embedding_size = 32
+    cnn_inputs = [(2, 100), (3, 100), (4, 100), (5, 100), (6, 100)]
+    char_vocab_size = 128
+    word_length = 64
 
 
 class MediumConfig(DefaultConfig):
@@ -333,6 +380,7 @@ def get_config():
     return {
         'small': SmallConfig(),
         'small-sampled': SmallSampledConfig(),
+        'small-cnn': SmallCNNConfig(),
         'medium': MediumConfig(),
         'medium-sampled': MediumSampledConfig(),
         'large': LargeConfig(),
